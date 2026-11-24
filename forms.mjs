@@ -1,4 +1,6 @@
-const {PDFDocument, rgb} = globalThis.PDFLib;
+import {activeDates, blockedRanges, purposes, validDate} from './rules.mjs';
+
+const {PDFDocument, PDFName, rgb} = globalThis.PDFLib;
 const fontkit = globalThis.fontkit;
 const ink = rgb(0.035, 0.12, 0.22);
 const white = rgb(1, 1, 1);
@@ -28,7 +30,7 @@ export function reportCount(data) {
   return data.unit === '반일' ? 1 : Math.min(5, Math.max(1, Math.ceil(Number(data.days) || 1)));
 }
 
-export function validate(data, type) {
+export function validate(data, type, calendar = []) {
   const errors = {};
   const warnings = [];
   const required = {
@@ -58,8 +60,7 @@ export function validate(data, type) {
   }
   if (data.kind && !kinds.includes(data.kind)) errors.kind = '학습 형태를 목록에서 선택해 주세요.';
   if (data.kind === '가정학습' && !data.severe) errors.severe = '가정학습은 감염병 위기경보 심각 단계에서만 가능합니다.';
-  const dateOK = value => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '') &&
-    Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+  const dateOK = validDate;
   const half = data.unit === '반일';
   const end = half ? data.start : data.end;
   for (const key of half ? ['start', 'signed'] : ['start', 'end', 'signed']) {
@@ -71,6 +72,11 @@ export function validate(data, type) {
   }
   if (dateOK(data.start) && dateOK(end) && end < data.start) errors.end = '종료일은 시작일 이후여야 합니다.';
   const days = half ? 0.5 : Number(data.days);
+  const dates = activeDates(data, calendar);
+  if (dateOK(data.start) && dateOK(end) && end >= data.start && !dates.length)
+    errors.start ??= '선택한 기간에 출석인정 대상 수업일이 없습니다.';
+  if (!half && dates.length && days !== dates.length)
+    errors.days = '입력한 기간의 수업일은 ' + dates.length + '일입니다. 일수와 학사일정을 확인해 주세요.';
   if (!half && data.days && (!Number.isInteger(days) || days < 1 || days > 5))
     errors.days = '출석인정 일수는 1~5일 사이의 정수로 입력해 주세요.';
   if (!half && dateOK(data.start) && dateOK(end) && end >= data.start && days > daysBetween(data.start, end) + 1)
@@ -85,28 +91,36 @@ export function validate(data, type) {
     if (!data.attended) errors.attended = '당일 수업 참여 여부를 확인해 주세요.';
   }
   if (type === 'application') {
+    const blocked = blockedRanges(data,calendar);
+    if (blocked.length) errors.start = '신청 불허기간에 해당합니다. ' + blocked.map(rule => rule.note + ' (' + rule.start + ' ~ ' + rule.end + ')').join(', ');
+    if (data.purposeChoice && !purposes[data.kind]?.includes(data.purposeChoice))
+      errors.purposeChoice = '학습 형태에 해당하는 세부 목적을 선택해 주세요.';
     if (!data.confirmed) errors.confirmed = '학교 세부 규정과 불허기간을 확인해 주세요.';
     if (String(data.previous ?? '').trim() && !/^\d+(?:\.[05])?$/.test(String(data.previous))) errors.previous = '이전 사용 일수는 0.5일 단위로 입력해 주세요. 사용 이력이 없으면 0을 입력하세요.';
     else if (Number(data.previous) < 0 || Number(data.previous) + days > 20) errors.previous = '이번 신청을 더한 누적 일수가 연간 20일을 초과합니다.';
     if (dateOK(data.signed) && dateOK(data.start)) {
       if (data.signed >= data.start) errors.signed = '신청서 작성일은 체험 시작일보다 앞서야 합니다.';
-      else if (daysBetween(data.signed, data.start) < 3) warnings.push('작성일과 시작일 간격이 3일 미만입니다. 학교의 제출 기한을 확인하세요.');
+      else if (daysBetween(data.signed, data.start) < 3) errors.signed = '신청서는 실시 최소 3일 전에 제출해야 합니다.';
     }
   } else {
     let last = '';
     for (let i = 1; i <= reportCount(data); i++) {
       const fixedDay = half || data.start === end;
       const date = fixedDay ? data.start : data['dayDate' + i];
-      if (!dateOK(date) || date < (data.start ?? '') || date > (end ?? '') || date <= last)
+      if (!dateOK(date) || !dates.includes(date) || date <= last)
         errors['dayDate' + i] = i + '일차 체험일을 체험 기간 안에서 순서대로 입력해 주세요.';
       last = date;
       if (!data['body' + i]?.trim()) errors['body' + i] = i + '일차 활동 내용과 느낀 점을 입력해 주세요.';
+      else if (data['recordedDate'+i] && data['recordedDate'+i] !== date)
+        errors['body'+i] = i + '일차 기록의 기존 날짜(' + data['recordedDate'+i] + ')가 달라졌습니다. 현재 체험일의 내용으로 수정해 주세요.';
     }
     if (dateOK(end) && dateOK(data.signed)) {
       if (data.signed < end) errors.signed = '결과보고서 작성일은 체험 종료일 이후여야 합니다.';
       if (daysBetween(end, data.signed) > 3) warnings.push('종료 후 3일을 초과했습니다. 실제 제출 일정을 담임교사에게 확인하세요.');
     }
-    if (!data.proofs?.length) warnings.push('증빙이 PDF에 첨부되지 않았습니다. 제출할 때 증빙을 함께 첨부하세요.');
+    if (!data.proofs?.length) errors.proofs = '결과보고서에 활동 증빙 파일을 첨부해 주세요.';
+    if (data.region === '국외' && !data.overseasProof)
+      errors.overseasProof = '국외 체험은 날짜를 확인할 수 있는 증빙 사본을 첨부했는지 확인해 주세요.';
   }
   if (!data.guardianSignature || !data.studentSignature) warnings.push('PDF에서 비어 있는 서명란은 출력 후 해당자가 직접 서명하세요.');
   return {errors, warnings};
@@ -120,6 +134,7 @@ export async function makePDF(data, type) {
   const pdf = await PDFDocument.create();
   pdf.setTitle('경안고등학교 교외체험학습 ' + labels[type]);
   pdf.registerFontkit(fontkit);
+  // Embed the full font to preserve Hangul glyphs in the PDF.js print preview.
   const font = await pdf.embedFont(fontBytes, {subset: false});
   const glyphs = new Set(font.getCharacterSet());
   const dateParts = value => String(value).split('-').map(Number);
@@ -275,6 +290,19 @@ export async function makePDF(data, type) {
     }
     for (const [i, file] of (data.proofs ?? []).entries()) {
       const bytes = await file.arrayBuffer();
+      if (/\.pdf$/i.test(file.name)) {
+        try {
+          const evidence = await PDFDocument.load(bytes);
+          if (!evidence.getPageCount()) throw Error('빈 PDF');
+          for (const copied of await pdf.copyPages(evidence,evidence.getPageIndices())) {
+            copied.node.delete(PDFName.of('Annots'));
+            pdf.addPage(copied);
+          }
+        } catch {
+          throw Error((i + 1) + '번째 증빙 PDF를 읽을 수 없습니다. 암호를 해제하거나 PDF를 다시 저장해 주세요.');
+        }
+        continue;
+      }
       let photo;
       try {
         photo = file.type === 'image/png' || /\.png$/i.test(file.name)

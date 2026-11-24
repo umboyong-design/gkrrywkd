@@ -1,4 +1,6 @@
 import {kinds, labels, reportCount, validate, makePDF} from './forms.mjs';
+import {activeDates, blockedRanges, calendarError, emptyCalendar, moveDate, purposes, relations} from './rules.mjs';
+import {columns} from './roster-columns.mjs';
 
 const $ = id => document.getElementById(id);
 const editor = $('editor');
@@ -11,6 +13,9 @@ let previewTask;
 let previewGeneration = 0;
 let rosterNotice = '';
 let rosterError = false;
+let calendar = emptyCalendar;
+let calendarSource = '저장소 기본 일정';
+const selectedForBatch = new Set();
 
 function koreaToday() {
   return new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format();
@@ -24,7 +29,18 @@ function newPerson() {
 }
 let individual = newPerson();
 const person = () => mode === 'single' ? individual : people[selected];
-const dataFor = (entry, doc = type) => ({...entry.identity, ...entry[doc]});
+function dataFor(entry, doc = type) {
+  const data = {...entry.identity, ...entry[doc]};
+  const dates = activeDates(data,calendar);
+  data.days = String(dates.length);
+  dates.slice(0,5).forEach((date,i) => {
+    data['recordedDate'+(i+1)] = data['dayDate'+(i+1)];
+    data['dayDate'+(i+1)] = date;
+  });
+  if (doc === 'application' && data.purposeChoice && data.purposeChoice !== '직접 입력')
+    data.purpose = [data.purposeChoice,data.purpose].filter(Boolean).join(' — ');
+  return data;
+}
 
 function el(tag, props = {}, ...children) {
   const node = Object.assign(document.createElement(tag), props);
@@ -40,8 +56,8 @@ function group(title, children, note = '') {
     el('div', {className:'grid'}, children));
 }
 function field(target, key, label, opt = {}) {
-  const {kind = 'text', options, wide, required = true, help, max = 75, min, step, limit, change} = opt;
-  const id = 'input-' + key;
+  const {kind = 'text', options, wide, required = true, help, max = 75, min, step, limit, change, prefix = 'input'} = opt;
+  const id = prefix + '-' + key;
   const input = el(options ? 'select' : kind === 'textarea' ? 'textarea' : 'input', {id, name:key});
   if (options) for (const item of options) input.add(el('option', {value:item}, item || '선택하세요'));
   if (input.tagName === 'INPUT') input.type = kind;
@@ -61,6 +77,15 @@ function field(target, key, label, opt = {}) {
     target[key] = input.value;
     input.removeAttribute('aria-invalid');
     if (mode === 'batch' && target === person()?.identity) refreshRosterLabel();
+    if (key.startsWith('body')) {
+      const i = Number(key.slice(4));
+      const date = activeDates(dataFor(person()),calendar)[i-1];
+      if (date) target['dayDate'+i] = date;
+    }
+    updateSummary();
+  });
+  if (mode === 'batch') input.addEventListener('change', () => {
+    if (target === person()?.identity || ['unit','region','purposeChoice','guardianRel','leaderRel'].includes(key)) showRoster();
   });
   if (change) input.addEventListener('change', () => change(input.value));
   return el('label', {className:'field' + (wide ? ' full' : ''), htmlFor:id},
@@ -69,7 +94,10 @@ function field(target, key, label, opt = {}) {
 }
 function check(target, key, label) {
   const input = el('input', {type:'checkbox', id:'input-' + key, checked:!!target[key], required:true});
-  input.onchange = () => { target[key] = input.checked; };
+  input.onchange = () => {
+    target[key] = input.checked; updateSummary();
+    if (mode === 'batch' && ['attended','confirmed'].includes(key)) showRoster();
+  };
   return el('label', {className:'check full'}, input, label);
 }
 function signature(doc, key, title) {
@@ -127,7 +155,7 @@ function signature(doc, key, title) {
     }, 'quiet'));
 }
 function proofs(doc) {
-  const input = el('input', {type:'file', id:'proofs', multiple:true, accept:'image/jpeg,image/png,.jpg,.jpeg,.png'});
+  const input = el('input', {type:'file', id:'input-proofs', multiple:true, accept:'.jpg,.jpeg,.png,.pdf'});
   const list = el('div', {className:'file-list'});
   const status = el('p', {className:'hint', role:'status'});
   const refresh = () => {
@@ -139,9 +167,9 @@ function proofs(doc) {
     input.value = '';
     if (!files.length) return;
     const next = [...(doc.proofs ?? []), ...files];
-    if (files.some(file => !/\.(png|jpe?g)$/i.test(file.name) || !file.size || file.size > 8 * 1024 * 1024)
+    if (files.some(file => !/\.(png|jpe?g|pdf)$/i.test(file.name) || !file.size || file.size > 8 * 1024 * 1024)
       || next.length > 10 || next.reduce((size, file) => size + file.size, 0) > 25 * 1024 * 1024) {
-      status.textContent = 'JPG·PNG만 추가할 수 있습니다. 최대 10장, 파일당 8MB, 합계 25MB까지 가능합니다.';
+      status.textContent = 'JPG·PNG·PDF를 최대 10개, 파일당 8MB, 합계 25MB까지 추가할 수 있습니다.';
       return;
     }
     doc.proofs = next;
@@ -150,8 +178,88 @@ function proofs(doc) {
   };
   refresh();
   return el('div', {className:'full'}, el('label', {className:'field', htmlFor:'proofs'},
-    el('span', {className:'field-label'}, '증빙 사진'), input,
-    el('small', {}, '활동 장소와 동반인을 증명할 수 있는 사진 등을 첨부하세요. JPG·PNG는 결과보고서 뒤에 붙고, 다른 형식은 제출할 때 별도로 첨부합니다.')), status, list);
+    el('span', {className:'field-label'}, '활동 증빙 파일 *'), input,
+    el('small', {}, '활동 장소와 동반인을 증명할 수 있는 JPG·PNG·PDF를 첨부하세요. 파일은 결과보고서 뒤에 붙습니다.')), status, list);
+}
+function updateSummary() {
+  const display = $('schedule-summary');
+  const entry = person();
+  if (!display || !entry) return;
+  const data = dataFor(entry);
+  const dates = activeDates(data,calendar);
+  const end = data.unit === '반일' ? data.start : data.end;
+  const days = dates.length ? (data.unit === '반일' ? 0.5 : dates.length) : 0;
+  const previous = data.previous === '' || data.previous == null ? NaN : Number(data.previous);
+  const blocked = type === 'application' ? blockedRanges(data,calendar) : [];
+  display.replaceChildren(
+    el('p', {}, `출석인정 ${days}일` + (Number.isFinite(previous) ? ` · 누적 ${previous+days}일 · 잔여 ${20-previous-days}일` : '')),
+    el('p', {}, `신청 마감 ${moveDate(data.start,-3) || '—'} · 보고서 마감 ${moveDate(end,3) || '—'}`),
+    ...blocked.map(rule => el('p',{className:'roster-error'},`신청 불허 · ${rule.note} (${rule.start} ~ ${rule.end})`))
+  );
+}
+function readCalendar(value) {
+  if (!Array.isArray(value) || value.length > 200 || value.some(rule => !rule || calendarError(rule)))
+    throw Error('일정 파일은 학년·유형·시작일·종료일·이름이 있는 일정 목록이어야 합니다.');
+  return value.map(({grade,type,start,end,note})=>({grade,type,start,end,note}));
+}
+function renderCalendar(message = '') {
+  const box = $('calendar-editor');
+  const draft = {grade:'전체',type:'불허'};
+  const status = el('p',{className:'hint',role:'status'},message);
+  function apply(value) {
+    calendar = value;
+    calendarSource = '이 브라우저의 설정';
+    try {
+      localStorage.setItem('gyeongan-calendar-2026',JSON.stringify(calendar));
+      renderCalendar('이 브라우저에 일정을 저장했습니다.');
+    } catch { renderCalendar('일정을 이 탭에 적용했습니다. 유지하려면 일정 JSON을 내려받으세요.'); }
+    renderEditor();
+  }
+  const upload = el('input',{type:'file',accept:'.json',id:'calendar-file'});
+  upload.onchange = async () => {
+    const file = upload.files[0];
+    if (!file) return;
+    try {
+      if (file.size > 100000) throw Error('일정 파일은 100KB 이하여야 합니다.');
+      const value = readCalendar(JSON.parse(await file.text()));
+      if (!calendar.length || confirm('현재 학사일정 설정을 가져온 일정으로 교체할까요?')) apply(value);
+    } catch (error) { status.textContent = error.message; }
+    finally { upload.value = ''; }
+  };
+  const list = el('ul',{className:'calendar-list'},...calendar.map((rule,index) => el('li',{},
+    `${rule.grade === '전체' ? '전체' : rule.grade+'학년'} · ${rule.type} · ${rule.note} · ${rule.start} ~ ${rule.end} `,
+    button('삭제',() => apply(calendar.filter((_,i)=>i!==index)),'quiet'))));
+  box.replaceChildren(hint(calendar.length ? `${calendarSource} · ${calendar.length}건` : '등록된 일정이 없습니다. 학교의 실제 불허기간과 휴업일을 확인하세요.'),
+    list,
+    field(draft,'grade','대상 학년',{options:['전체','1','2','3'],prefix:'calendar'}),
+    field(draft,'type','기간 유형',{options:['불허','휴업'],prefix:'calendar'}),
+    field(draft,'start','시작일',{kind:'date',prefix:'calendar'}),
+    field(draft,'end','종료일',{kind:'date',prefix:'calendar'}),
+    field(draft,'note','기간 이름',{max:60,prefix:'calendar'}),
+    button('기간 추가',() => {
+      const error = calendarError(draft);
+      if (error || calendar.length >= 200) { status.textContent = error || '최대 200개까지 등록할 수 있습니다.'; return; }
+      apply([...calendar,{...draft,note:draft.note.trim()}]);
+    }),
+    el('label',{className:'field',htmlFor:'calendar-file'},el('span',{className:'field-label'},'일정 JSON 가져오기'),upload),
+    button('일정 JSON 내려받기',()=>downloadBytes(JSON.stringify(calendar,null,2),'calendar.json','application/json')),
+    status);
+}
+async function loadCalendar() {
+  try {
+    const saved = localStorage.getItem('gyeongan-calendar-2026');
+    if (saved !== null) {
+      calendar = readCalendar(JSON.parse(saved));
+      calendarSource = '이 브라우저의 설정';
+      renderCalendar(); renderEditor(); return;
+    }
+  } catch { /* Load the repository calendar if the browser setting is unavailable. */ }
+  try {
+    const response = await fetch(new URL('./calendar.json',import.meta.url),{credentials:'omit'});
+    if (!response.ok) throw Error();
+    calendar = readCalendar(await response.json());
+    renderCalendar(); renderEditor();
+  } catch { renderCalendar('기본 일정 파일을 읽지 못했습니다. 실제 학사일정을 확인하세요.'); }
 }
 function renderEditor() {
   const entry = person();
@@ -170,18 +278,21 @@ function renderEditor() {
   const half = doc.unit === '반일';
   const reportDays = el('div');
   const refreshDays = () => {
-    const count = reportCount(doc);
+    const data = dataFor(entry);
+    const dates = activeDates(data,calendar);
+    const count = dates.length ? reportCount(data) : 0;
     reportDays.replaceChildren(group('체험일별 기록', Array.from({length:count}, (_, index) => {
       const i = index + 1;
       const children = [];
-      if (count > 1 || (doc.unit !== '반일' && doc.end && doc.end !== doc.start))
-        children.push(f('dayDate'+i, '체험일', {kind:'date'}));
       children.push(f('body'+i, '활동 내용과 느낀 점', {kind:'textarea', max:1600}));
-      return el('div', {className:'day-entry full'}, el('h4', {}, i+'일차'+(i>1?' · 별지':'')), children);
-    }).concat(proofs(doc)), '학생이 한 일과 배운 점을 체험일마다 직접 적어 주세요.'));
+      return el('div', {className:'day-entry full'}, el('h4', {}, i+'일차 · '+dates[index]+(i>1?' · 별지':'')), children);
+    }).concat(proofs(doc)), dates.length ? '학생이 한 일과 배운 점을 체험일마다 직접 적어 주세요.' : '체험 일정을 먼저 입력하세요.'));
   };
   const typeExtras = el('div', {className:'full'});
+  const purposeSelect = el('div',{className:'full'});
   const refreshKind = () => {
+    const options = purposes[doc.kind] ?? [];
+    purposeSelect.replaceChildren(f('purposeChoice','세부 목적',{options:['',...new Set([...options,...(doc.purposeChoice?[doc.purposeChoice]:[])])],required:false}));
     typeExtras.replaceChildren(...(doc.kind === '가정학습'
       ? [check(doc, 'severe', '감염병 위기경보 심각 단계임을 확인했습니다.')] : []));
   };
@@ -189,7 +300,7 @@ function renderEditor() {
   const sections = [
     group('학생 정보', [
       field(id,'name','성명',{max:20}),
-      field(id,'grade','학년',{options:['','1','2','3']}),
+      field(id,'grade','학년',{options:['','1','2','3'],change:app?null:refreshDays}),
       field(id,'classroom','반',{kind:'number',min:1,limit:99,step:1}),
       field(id,'number','번호',{kind:'number',min:1,limit:99,step:1}),
       app ? f('studentPhone','학생 휴대폰',{kind:'tel',max:22,wide:true}) : null
@@ -198,35 +309,45 @@ function renderEditor() {
       f('unit','체험 단위',{options:['1일','반일'],change:renderEditor,wide:true}),
       f('start',half?'체험일':'시작일',{kind:'date',change:app?null:refreshDays,wide:half}),
       !half ? f('end','종료일',{kind:'date',change:app?null:refreshDays}) : null,
-      half ? f('from','시작 시각',{kind:'time'}) : f('days','출석인정 일수',{kind:'number',min:1,limit:5,step:1,change:app?null:refreshDays,help:'공휴일·방학·재량휴업일을 제외한 인정 일수를 입력하세요.'}),
+      half ? f('from','시작 시각',{kind:'time'}) : null,
       half ? f('to','종료 시각',{kind:'time'}) : null,
       app ? f('previous','이번 신청 전 사용 일수',{kind:'number',min:0,limit:20,step:.5,help:'이번 신청을 포함한 누적 일수는 PDF에 자동 반영됩니다.'}) : null,
       half ? check(doc,'attended','체험 당일 수업에 참여하는 경우입니다.') : null,
-      f('kind','학습 형태',{options:['',...kinds],change:refreshKind}),
+      f('kind','학습 형태',{options:['',...kinds],change:() => { doc.purposeChoice = ''; refreshKind(); if (mode === 'batch') showRoster(); }}),
+      app ? purposeSelect : null,
+      f('region','국내·국외',{options:['','국내','국외'],required:false,change:renderEditor}),
       f('destination','목적지',{max:65}),
       typeExtras,
+      el('div',{id:'schedule-summary',className:'schedule-summary full',role:'status'}),
       app ? f('lodging','숙박장소',{required:false,max:45,help:'숙박하는 경우에 입력하세요.'}) : null,
       app ? check(doc,'confirmed','학교 세부 규정과 실제 학사일정의 불허기간을 확인했습니다.') : null
     ])
   ];
   if (app) sections.push(
     group('보호자·인솔자 정보', [
-      f('guardian','보호자 성명',{max:20}),f('guardianRel','보호자 관계',{max:12}),f('guardianPhone','보호자 휴대폰',{kind:'tel',max:22}),
+      f('guardian','보호자 성명',{max:20}),f('guardianRel','보호자 관계',{options:['',...new Set([...relations,...(doc.guardianRel?[doc.guardianRel]:[])])]}),f('guardianPhone','보호자 휴대폰',{kind:'tel',max:22}),
       el('div', {},button('보호자 정보로 인솔자 채우기', () => {
         doc.leader = doc.guardian; doc.leaderRel = doc.guardianRel; doc.leaderPhone = doc.guardianPhone;
         renderEditor(); $('input-leader')?.focus();
       })),
-      f('leader','인솔자 성명',{max:20}),f('leaderRel','인솔자 관계',{max:12}),f('leaderPhone','인솔자 휴대폰',{kind:'tel',max:22})
+      f('leader','인솔자 성명',{max:20}),f('leaderRel','인솔자 관계',{options:['',...new Set([...relations,...(doc.leaderRel?[doc.leaderRel]:[])])]}),f('leaderPhone','인솔자 휴대폰',{kind:'tel',max:22})
     ]),
     group('체험학습 계획', [
-      f('purpose','목적',{kind:'textarea',wide:true,max:350}),
+      f('purpose','목적 상세',{kind:'textarea',wide:true,max:350,required:false,help:'세부 목적을 선택하거나 직접 입력하세요.'}),
       f('plan','체험학습 계획',{kind:'textarea',wide:true,max:1500,help:'날짜별 장소와 활동을 적어 주세요.'})
     ])
   );
   else {
     sections.push(group('결과보고서 정보',[
+      button('신청서의 일정과 동반자 불러오기', () => {
+        for (const key of ['unit','start','end','from','to','attended','kind','region','destination','guardian','severe']) {
+          if (entry.application[key] != null) doc[key] = entry.application[key];
+        }
+        renderEditor();
+      }),
       f('guardian','보호자(동반자) 성명',{max:20}),
-      f('title','보고서 제목',{max:65})
+      f('title','보고서 제목',{max:65}),
+      doc.region === '국외' ? check(doc,'overseasProof','날짜 확인이 가능한 증빙 사본을 첨부했습니다.') : null
     ]), reportDays);
     refreshDays();
   }
@@ -236,25 +357,11 @@ function renderEditor() {
     signature(doc,'studentSignature','학생 서명')
   ], '서명은 해당자가 직접 그리거나 출력 후 서명할 수 있습니다.'));
   editor.replaceChildren(...sections);
+  updateSummary();
 }
 
-const columns = [
-  ['학년','grade'],['반','classroom'],['번호','number'],['성명','name'],['학생휴대폰','studentPhone','application'],
-  ['신청단위','unit','both'],['시작일','start','both'],['종료일','end','both'],['일수','days','both'],
-  ['시작시각','from','both'],['종료시각','to','both'],['이전사용일수','previous','application'],
-  ['학습형태','kind','both'],['목적지','destination','both'],['숙박장소','lodging','application'],
-  ['보호자','guardian','both'],['보호자관계','guardianRel','application'],['보호자휴대폰','guardianPhone','application'],
-  ['인솔자','leader','application'],['인솔자관계','leaderRel','application'],['인솔자휴대폰','leaderPhone','application'],
-  ['목적','purpose','application'],['체험학습계획','plan','application'],
-  ['규정확인','confirmed','application'],['당일수업참여','attended','both'],['심각단계확인','severe','both'],
-  ['신청서작성일','signed','application'],['보고서작성일','signed','report'],['보고서제목','title','report'],
-  ['보고서동반자','guardian','report'],
-  ...Array.from({length:5}, (_, i) => [
-    [i+1+'일차날짜','dayDate'+(i+1),'report'], [i+1+'일차기록','body'+(i+1),'report']
-  ]).flat()
-];
 const identityKeys = ['grade','classroom','number','name'];
-const commonKeys = ['unit','start','end','days','from','to','kind','destination','lodging','attended','severe','plan','purpose'];
+const commonKeys = ['unit','start','end','from','to','kind','purposeChoice','region','destination','lodging','attended','severe','plan','purpose'];
 const importLabel = 'CSV·엑셀 명단 불러오기';
 const normalized = str => String(str).toLowerCase().replace(/[\s_\uFEFF()·.–-]/g, '');
 const spreadsheet = () => globalThis.XLSX;
@@ -267,18 +374,9 @@ function downloadBytes(bytes, filename, mime) {
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 20000);
 }
-function writeRosterTemplate(format) {
-  const xlsx = spreadsheet();
+function writeRosterTemplate() {
   const headers = columns.map(([name]) => name);
-  if (format === 'csv') {
-    downloadBytes('\uFEFF'+headers.join(',')+'\r\n', '교외체험학습_학급명단.csv','text/csv;charset=utf-8');
-    return;
-  }
-  const book = xlsx.utils.book_new();
-  const sheet = xlsx.utils.aoa_to_sheet([headers]);
-  sheet['!cols'] = headers.map(() => ({wch:16}));
-  xlsx.utils.book_append_sheet(book, sheet, '명단');
-  downloadBytes(xlsx.write(book,{bookType:'xlsx',type:'array'}),'교외체험학습_학급명단.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  downloadBytes('\uFEFF'+headers.join(',')+'\r\n', '교외체험학습_학급명단.csv','text/csv;charset=utf-8');
 }
 function studentLabel(entry, i) {
   const {grade,classroom,number,name} = entry.identity;
@@ -311,11 +409,12 @@ function showRoster() {
   };
   const add = button('학생 추가', () => {
     if (people.length >= 30) { rosterMessage('한 번에 최대 30명까지 등록할 수 있습니다.',true); return; }
-    people.push(newPerson()); selected = people.length-1;
+    const entry = newPerson(); people.push(entry); selectedForBatch.add(entry); selected = people.length-1;
     showRoster(); renderEditor(); feedback(); $('input-name')?.focus();
   });
   const remove = button('선택 학생 삭제', () => {
     if (!person() || !confirm('선택한 학생의 입력 내용을 삭제할까요?')) return;
+    selectedForBatch.delete(person());
     people.splice(selected,1); selected = Math.max(0,Math.min(selected,people.length-1));
     rosterMessage('선택한 학생을 삭제했습니다.'); renderEditor(); feedback();
   }, 'quiet');
@@ -331,13 +430,63 @@ function showRoster() {
   container.replaceChildren(el('h2',{},'학급 명단 · '+people.length+' / 30명'), hint('첫 행에 학년, 반, 번호, 성명을 넣으세요. 서식의 나머지 열은 선택 항목입니다. 명단 불러오기는 기존 학급 명단을 교체합니다.'),
     el('div',{className:'roster-tools'}, el('label',{className:'field',htmlFor:upload.id},
       el('span',{className:'field-label'},importLabel), upload),
-      button('CSV 양식',()=>writeRosterTemplate('csv')), button('엑셀 양식',()=>writeRosterTemplate('xlsx')), add),
+      button('CSV 양식',writeRosterTemplate), el('a',{className:'secondary template-link',href:'assets/roster-template.xlsx',download:'교외체험학습_30명_입력양식.xlsx'},'엑셀 양식'), add),
     el('p',{className:'hint' + (rosterError?' roster-error':''),role:'status'},rosterNotice),
     people.length ? list : null,
+    people.length ? rosterGrid() : null,
     people.length ? el('div',{className:'actions batch-actions'},
       button('선택 학생의 공통 내용 복사', copyCommon),
       button('현재 서식 ZIP',()=>runBusy(()=>batchDownload([type]))),
       button('두 서식 ZIP',()=>runBusy(()=>batchDownload(['application','report'])),'primary'), remove) : null);
+}
+function rosterGrid() {
+  const fields = [
+    ['단위','unit',['1일','반일']],['학습 형태','kind',kinds],
+    ['세부 목적','purposeChoice',[]],['국내·국외','region',['국내','국외']],
+    ['당일 수업','attended',['예','아니오']],['규정 확인','confirmed',['예','아니오']],
+    ['보호자 관계','guardianRel',relations],['인솔자 관계','leaderRel',relations]
+  ].filter(([label,key]) => type === 'application' || !['purposeChoice','confirmed','guardianRel','leaderRel'].includes(key));
+  const table = el('table',{className:'roster-grid'}, el('thead',{},el('tr',{},
+    ...['대상','학생',...fields.map(([label])=>label)].map(label=>el('th',{scope:'col'},label)))));
+  const body = el('tbody');
+  for (const [i,entry] of people.entries()) {
+    const doc = entry[type];
+    const label = studentLabel(entry,i);
+    const pick = el('input',{type:'checkbox',checked:selectedForBatch.has(entry),ariaLabel:label+' 일괄 작업 대상'});
+    pick.onchange = () => pick.checked ? selectedForBatch.add(entry) : selectedForBatch.delete(entry);
+    const choices = new Map();
+    for (const [title,key,options] of fields) {
+      const input = el('select',{ariaLabel:label+' '+title});
+      const boolean = ['confirmed','attended'].includes(key);
+      const refresh = (values) => {
+        const value = boolean ? ({true:'예',false:'아니오'}[doc[key]] ?? '') : (doc[key] ?? '');
+        input.replaceChildren(...['',...new Set([...values,...(value?[value]:[])])].map(item=>el('option',{value:item},item || '선택')));
+        input.value = value;
+        input.disabled = key === 'purposeChoice' && !values.length;
+      };
+      refresh(key === 'purposeChoice' ? (purposes[doc.kind] ?? []) : options);
+      input.onchange = () => {
+        doc[key] = boolean ? input.value === '예' : input.value;
+        if (key === 'kind' && choices.has('purposeChoice')) {
+          doc.purposeChoice = '';
+          choices.get('purposeChoice').refresh(purposes[doc.kind] ?? []);
+        }
+        if (person() === entry) renderEditor();
+      };
+      choices.set(key,{input,refresh});
+    }
+    body.append(el('tr',{},el('td',{},pick),el('th',{scope:'row'},label),...[...choices.values()].map(({input})=>el('td',{},input))));
+  }
+  table.append(body);
+  const toggle = el('input',{type:'checkbox',checked:people.every(entry=>selectedForBatch.has(entry))});
+  toggle.onchange = () => {
+    selectedForBatch.clear();
+    if (toggle.checked) people.forEach(entry=>selectedForBatch.add(entry));
+    showRoster();
+  };
+  return el('details',{className:'batch-grid',open:true},el('summary',{},'표에서 선택 항목 편집'),
+    el('label',{className:'check'},toggle,'일괄 작업 대상 전체 선택'),
+    el('div',{className:'table-scroll',tabIndex:0,ariaLabel:'학급 편집표. 가로로 스크롤할 수 있습니다.'},table));
 }
 function rosterMessage(message, error = false) {
   rosterNotice = message;
@@ -383,11 +532,13 @@ async function importRoster(file) {
   const sheet = book.Sheets[book.SheetNames[0]];
   const matrix = sheet ? xlsx.utils.sheet_to_json(sheet,{header:1,defval:'',blankrows:false}) : [];
   if (!matrix.length) throw Error('명단 파일의 첫 번째 시트가 비어 있습니다.');
-  const [headers,...rows] = matrix;
+  const [headers,...rawRows] = matrix;
   const aliases = new Map([['이름','성명'],['이름성명','성명'],['학생명','성명'],['학생이름','성명'],['학급','반'],['번','번호'],['보호자명','보호자']]);
   const names = headers.map(value => aliases.get(normalized(value)) ?? normalized(value));
-  const fields = columns.map(([header,key,doc])=>[names.indexOf(normalized(header)),key,doc]);
+  const legacyDates = Array.from({length:5},(_,i) => [i+1+'일차날짜','dayDate'+(i+1),'report']);
+  const fields = [...columns,...legacyDates].map(([header,key,doc])=>[names.indexOf(normalized(header)),key,doc]);
   if (fields.slice(0,4).some(([i])=>i===-1)) throw Error('첫 행의 필수 열인 학년, 반, 번호, 성명을 확인해 주세요.');
+  const rows = rawRows.filter(row => fields.some(([index]) => index >= 0 && String(row[index] ?? '').trim()));
   if (headers.length > 100 || rows.length > 30 || (sheet['!fullref'] && xlsx.utils.decode_range(sheet['!fullref']).e.r > 32))
     throw Error('한 번에 학생 30명까지 불러올 수 있습니다.');
   if (!rows.length) throw Error('머리글 아래에 학생 정보를 넣어 주세요.');
@@ -411,18 +562,21 @@ async function importRoster(file) {
   });
   if (people.length && !confirm('현재 명단과 학생별 입력을 새 명단으로 교체할까요?')) { showRoster(); return; }
   people = imported; selected = 0;
+  selectedForBatch.clear();
+  people.forEach(entry=>selectedForBatch.add(entry));
   rosterMessage(imported.length+'명을 불러왔습니다.');
   renderEditor(); feedback();
 }
 function copyCommon() {
   const source = person()?.[type];
-  if (!source || people.length < 2) { rosterMessage('학생 2명 이상을 등록해 주세요.',true); return; }
-  if (!confirm('현재 서식의 일정·목적지와 공통 계획을 다른 학생에게 복사할까요? 입력된 공통 항목만 덮어씁니다.')) return;
-  for (const entry of people) {
-    if (entry === person()) continue;
+  const recipients = people.filter(entry=>entry !== person() && selectedForBatch.has(entry));
+  if (!source || !recipients.length) { rosterMessage('원본 학생을 제외하고 표에서 복사할 대상을 선택해 주세요.',true); return; }
+  if (!confirm('현재 서식의 일정·목적지와 공통 계획을 선택한 '+recipients.length+'명에게 복사할까요?')) return;
+  for (const entry of recipients) {
     for (const key of commonKeys) if (source[key] != null && source[key] !== '') entry[type][key] = source[key];
+    if (!purposes[entry[type].kind]?.includes(entry[type].purposeChoice)) entry[type].purposeChoice = '';
   }
-  rosterMessage((people.length-1)+'명에게 공통 내용을 복사했습니다.');
+  rosterMessage(recipients.length+'명에게 공통 내용을 복사했습니다.');
 }
 
 function fileName(entry, doc) {
@@ -432,26 +586,27 @@ function fileName(entry, doc) {
 }
 function assess(entry, doc) {
   const data = dataFor(entry, doc);
-  const result = validate(data,doc);
+  const result = validate(data,doc,calendar);
   if (!['1일','반일'].includes(data.unit)) result.errors.unit = '신청 단위는 1일 또는 반일로 입력해 주세요.';
   return {data,...result};
 }
 async function runBusy(action, roster = false) {
   if (busy) return;
   busy = true;
-  const deactivate = () => document.querySelectorAll('button:not(#close-preview),input,select,textarea').forEach(control=>{control.disabled = true;});
-  deactivate();
+  const controls = [...document.querySelectorAll('button:not(#close-preview):not(#print-preview),input,select,textarea')].filter(control=>!control.disabled);
+  controls.forEach(control=>{control.disabled = true;});
   try { await action(); }
   catch (error) {
     const message = error?.message || '요청을 처리하지 못했습니다.';
     if (roster) rosterMessage(message,true);
     else feedback([message],true,true);
   } finally {
-    document.querySelectorAll('button:disabled,input:disabled,select:disabled,textarea:disabled').forEach(control=>{control.disabled=false;});
+    controls.forEach(control=>{control.disabled=false;});
     busy = false;
   }
 }
 async function renderPreview(pdfBytes, title) {
+  $('print-preview').disabled = true;
   const generation = ++previewGeneration;
   const dialog = $('preview-dialog');
   const pages = $('preview-pages');
@@ -476,6 +631,7 @@ async function renderPreview(pdfBytes, title) {
       pages.append(canvas);
     }
     status.textContent = preview.numPages+'쪽';
+    $('print-preview').disabled = false;
   } catch {
     if (generation === previewGeneration) status.textContent = '이 브라우저에서 미리보기를 표시하지 못했습니다. PDF를 내려받아 열어 주세요.';
   }
@@ -501,6 +657,7 @@ async function batchDownload(types) {
   const issues = [];
   const seen = new Set();
   for (const [i,entry] of people.entries()) {
+    if (!selectedForBatch.has(entry)) continue;
     const name = studentLabel(entry,i);
     const key = [entry.identity.grade,entry.identity.classroom,entry.identity.number].map(Number).join('-');
     if (seen.has(key)) issues.push(name+' · 학년·반·번호가 중복됩니다.');
@@ -512,6 +669,7 @@ async function batchDownload(types) {
       jobs.push({entry,doc,data,warnings,name});
     }
   }
+  if (!jobs.length) { feedback(['표에서 일괄 작업 대상을 선택해 주세요.'],true,true); return; }
   if (issues.length) { feedback(['아래 항목을 수정한 후 다시 내려받아 주세요.',...issues],true,true); return; }
   const zip = new globalThis.JSZip();
   const notes = [];
@@ -532,8 +690,8 @@ async function batchDownload(types) {
   }
   if (issues.length) { feedback(['아래 항목을 수정한 후 다시 내려받아 주세요.',...issues],true,true); return; }
   feedback(['ZIP 만드는 중…']);
-  const bytes = await zip.generateAsync({type:'uint8array',compression:'STORE'});
-  downloadBytes(bytes,'경안고_교외체험학습_'+(types.length===1?labels[types[0]]:'신청서_결과보고서')+'_'+people.length+'명.zip','application/zip');
+  const bytes = await zip.generateAsync({type:'uint8array',compression:'DEFLATE'});
+  downloadBytes(bytes,'경안고_교외체험학습_'+(types.length===1?labels[types[0]]:'신청서_결과보고서')+'_'+jobs.length/types.length+'명.zip','application/zip');
   feedback([jobs.length+'건을 ZIP으로 만들었습니다.',...notes]);
 }
 for (const value of ['single','batch']) {
@@ -545,12 +703,13 @@ for (const value of ['single','batch']) {
 }
 for (const value of ['application','report']) {
   $(value).onclick = () => {
-    type = value; renderEditor(); feedback();
+    type = value; showRoster(); renderEditor(); feedback();
   };
 }
 $('preview').onclick = () => runBusy(()=>singleAction(true));
 $('download').onclick = () => runBusy(()=>singleAction(false));
 $('close-preview').onclick = () => $('preview-dialog').close();
+$('print-preview').onclick = () => window.print();
 $('preview-dialog').addEventListener('close', () => {
   previewGeneration++;
   previewTask?.destroy().catch(()=>{});
@@ -560,9 +719,11 @@ $('preview-dialog').addEventListener('close', () => {
 $('reset').onclick = () => {
   if (!confirm('이 탭의 학생·학부모 입력과 교사용 학급 명단을 모두 지울까요?')) return;
   individual = newPerson(); people = []; selected = 0; rosterNotice = ''; rosterError = false;
+  selectedForBatch.clear();
   showRoster(); renderEditor(); feedback(['입력한 내용을 지웠습니다.']);
 };
 editor.addEventListener('submit',event=>event.preventDefault());
 renderEditor();
+loadCalendar();
 
 

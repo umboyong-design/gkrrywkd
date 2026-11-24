@@ -16,3 +16,27 @@ dialog{width:min(940px,96vw);max-height:94dvh;padding:0 14px 14px;border:1px sol
 @media(max-width:365px){.grid{grid-template-columns:1fr}.mark{display:none}}
 
 .brand .reset{white-space:nowrap;font-size:.84rem;padding-inline:5px}.brand small{font-size:.72rem}.roster-error{color:#8a3227;font-weight:700}
+.flow,.guide { grid-template-columns:minmax(0,1fr); }
+.card { min-width:0; }
+.template-link { display:inline-flex; align-items:center; justify-content:center; text-decoration:none; border-radius:8px; padding:.6rem .9rem; }
+.schedule-summary { padding:.75rem 1rem; background:#f1f6f9; border-radius:8px; font-size:.875rem; }
+.schedule-summary p { margin:.2rem 0; }
+.batch-grid { margin:1rem 0; }
+.table-scroll { max-width:100%; overflow:auto; max-height:26rem; border:1px solid #dbe4ed; border-radius:8px; }
+.roster-grid { border-collapse:collapse; width:100%; min-width:47rem; font-size:.875rem; }
+.roster-grid :is(td,th) { padding:.4rem; text-align:left; border-bottom:1px solid #dbe4ed; }
+.roster-grid th { white-space:nowrap; }
+.roster-grid thead th { position:sticky; top:0; background:#eff5f8; z-index:1; }
+.roster-grid select { min-width:5rem; padding:.35rem; }
+.calendar-list { padding-left:1rem; max-height:14rem; overflow:auto; font-size:.85rem; }
+#calendar-editor > .field { margin:.55rem 0; }
+#calendar-editor > .secondary { margin-bottom:.35rem; }
+@page { size:A4; margin:0; }
+@media print {
+  body { display:block !important; margin:0 !important; background:#fff !important; }
+  body > :not(#preview-dialog), #preview-dialog .dialog-bar, #preview-status, dialog::backdrop { display:none !important; }
+  #preview-dialog[open] { position:static !important; inset:auto !important; width:210mm !important; max-width:none !important; max-height:none !important; margin:0 !important; padding:0 !important; overflow:visible !important; border:0 !important; box-shadow:none !important; }
+  #preview-pages { display:block !important; margin:0 !important; padding:0 !important; }
+  #preview-pages canvas { display:block; width:auto !important; height:auto !important; max-width:210mm !important; max-height:296mm !important; object-fit:contain; margin:0 auto !important; box-shadow:none !important; break-inside:avoid; }
+  #preview-pages canvas + canvas { break-before:page; }
+}
