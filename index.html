@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="경안고등학교 2026학년도 교외체험학습 신청서 및 결과보고서 작성">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>교외체험학습 서식 작성 | 경안고등학교</title>
+<link rel="stylesheet" href="style.css">
+<script defer src="assets/pdf-lib.js"></script>
+<script defer src="assets/fontkit.js"></script>
+<script defer src="assets/jszip.js"></script>
+<script defer src="assets/xlsx.js"></script>
+<script type="module" src="app.mjs"></script>
+</head>
+<body>
+<header><div class="wrap brand"><span class="mark" aria-hidden="true">경안</span><div><strong>경안고등학교</strong><small>2026학년도 · 교외체험학습</small></div><button class="quiet reset" id="reset" type="button">입력 내용 지우기</button></div></header>
+<main class="wrap">
+  <section class="intro"><p class="eyebrow">학교장허가 교외체험학습</p><h1>신청서·결과보고서 작성</h1><p>내용을 입력하면 학교 서식에 맞춘 PDF를 내려받을 수 있습니다.</p></section>
+  <nav class="switch" aria-label="작성 방식"><button type="button" id="single" aria-pressed="true">학생·학부모</button><button type="button" id="batch" aria-pressed="false">교사 · 학급 일괄 작성</button></nav>
+  <div class="workspace">
+    <div class="flow">
+      <section id="roster" class="card" hidden aria-label="학급 명단"></section>
+      <section class="card">
+        <div class="editor-top"><h2 id="editor-title">문서 선택</h2>
+          <div id="doc-switch" class="switch document-switch" aria-label="서식 선택"><button type="button" id="application" aria-pressed="true">신청서 <small>서식 1</small></button><button type="button" id="report" aria-pressed="false">결과보고서 <small>서식 2</small></button></div>
+        </div>
+        <p id="empty-editor" hidden>명단을 불러오거나 학생을 추가하면 작성할 수 있습니다.</p>
+        <form id="editor" autocomplete="off" novalidate></form>
+        <div id="feedback" class="feedback" aria-live="polite" tabindex="-1" hidden></div>
+        <div class="actions editor-actions" id="editor-actions"><button type="button" id="preview" class="secondary">미리보기</button><button type="button" id="download" class="primary">PDF 내려받기</button></div>
+      </section>
+    </div>
+    <aside class="guide" aria-label="작성 안내">
+      <section class="card tips">
+        <h2>제출 전 확인</h2>
+        <dl>
+          <div><dt>신청서</dt><dd>실시 최소 3일 전 제출하고 담임교사에게 최종 허가 여부를 확인하세요.</dd></div>
+          <div><dt>결과보고서</dt><dd>종료 후 3일 이내 제출하세요. 학생이 체험일마다 직접 기록하고 증빙을 첨부합니다.</dd></div>
+          <div><dt>출석인정 일수</dt><dd>1회 최대 5일, 학년도 전체 20일입니다. 공휴일·방학·재량휴업일은 인정 일수에서 제외합니다.</dd></div>
+        </dl>
+        <details><summary>신청 제한 및 반일 기준</summary><p>정기시험 기간과 2차 정기시험 시행 후 학기말 성적처리 완료일까지 신청할 수 없습니다. 3학년 2학기는 1차 정기시험 시행 후 학기말 성적처리 완료일까지 제한됩니다. 방학식·종업식 당일도 신청할 수 없습니다.</p><p>학원 수강, 해외 어학연수, 사전 허가 기간을 초과한 결석은 출석인정 대상에서 제외됩니다.</p><p>반일은 당일 수업에 참여하고 체험시간이 4시간 미만인 경우에 가능합니다. 반일 2회는 1일로 계산합니다.</p><p>인솔자는 보호자 또는 보호자가 위임한 성인이어야 합니다. 국외 체험은 날짜를 확인할 수 있는 증빙 사본을 제출합니다. 체험 중에는 보호자와 담임교사가 연락을 유지하고, 사고가 발생하면 보호자가 담임교사에게 연락합니다.</p></details>
+      </section>
+      <section class="card privacy"><h2>개인정보 보호</h2><p>명단·서명·첨부 파일은 이 탭에서만 처리합니다. 탭을 닫거나 새로고침하면 입력이 지워집니다. 내려받은 파일은 기기에 남습니다.</p></section>
+    </aside>
+  </div>
+</main>
+<dialog id="preview-dialog" aria-labelledby="preview-title"><div class="dialog-bar"><h2 id="preview-title">PDF 미리보기</h2><button id="close-preview" type="button" class="secondary">닫기</button></div><p id="preview-status" role="status"></p><div id="preview-pages"></div></dialog>
+<footer class="wrap">경안고등학교 2026학년도 운영계획의 서식 1·2를 사용합니다.</footer>
+</body>
+</html>
+
